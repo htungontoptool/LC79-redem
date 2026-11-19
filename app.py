@@ -338,6 +338,8 @@ def login_and_get_info(u, p):
             "money": int(r2.get("remoteLoginResp", {}).get("money", 0) or 0),
             "pw_hashed": pw_hashed,
         }
+    except json.JSONDecodeError:
+        return {"_error": "Máy chủ LC79 không trả dữ liệu qua proxy này (proxy có thể bị chặn hoặc chết). Hãy đo ping proxy, thử proxy khác rồi thêm lại tài khoản."}
     except Exception as e:
         return {"_error": str(e)}
 
