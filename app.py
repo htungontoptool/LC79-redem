@@ -401,7 +401,7 @@ def code_variants(raw_text):
     """Các biến thể mã để thử: bản đã cắt tiền tố LC79 trước, bản đầy đủ sau."""
     if not raw_text:
         return []
-    m = re.search(r"Mã\s*code\s*là\s*:\s*([A-Z0-9]+)", raw_text, re.IGNORECASE)
+    m = re.search(r"Mã\s*code\s*là\s*:\s*(?:LC79\s*)?([A-Z0-9]{4,})", raw_text, re.IGNORECASE)
     if not m:
         return []
     full = m.group(1).strip().upper()
@@ -617,7 +617,7 @@ def extract_clean_code(raw_text):
     """Cắt tiền tố LC79 ở đầu mã code, ví dụ LC79CJBKQLAQI thành CJBKQLAQI."""
     if not raw_text:
         return None
-    match = re.search(r"Mã\s*code\s*là\s*:\s*([A-Z0-9]+)", raw_text, re.IGNORECASE)
+    match = re.search(r"Mã\s*code\s*là\s*:\s*(?:LC79\s*)?([A-Z0-9]{4,})", raw_text, re.IGNORECASE)
     if not match:
         return None
     code = match.group(1).strip().upper()
