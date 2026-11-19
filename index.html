@@ -466,7 +466,7 @@ tbody tr:hover td{background:#f3e6c6}
 
           <div class="divider"></div>
 
-          <label class="label" for="proxySrc">Proxy <span class="req">bắt buộc</span></label>
+          <label class="label" for="proxySrc">Proxy <span class="psub">tuỳ chọn</span></label>
           <textarea class="input" id="proxySrc" placeholder="Link list Webshare, hoặc dán từng proxy mỗi dòng"></textarea>
           <div class="row" style="margin-top:12px">
             <input class="input" id="burst" type="number" min="1" max="30" value="10" style="max-width:120px" placeholder="Luồng">
@@ -644,17 +644,17 @@ function renderTele(t) {
   $("telePill").lastElementChild.textContent = t.ready ? "Tele đã nối" : "Tele chưa nối";
   $("teleOn").hidden = !t.ready;
   $("teleOff").hidden = t.ready;
-  $("teleSub").textContent = t.ready ? "Đang theo dõi kênh" : "Chưa đăng nhập";
+  $("teleSub").textContent = t.ready ? "Đang theo dõi kênh" : "Chưa đăng nhập: nhắn /login cho bot Telegram";
   if (t.ready) {
     $("teleName").textContent = t.name || "Tele";
     $("telePhone").textContent = t.phone || "";
     $("teleAv").textContent = (t.name || "TG").slice(0, 2).toUpperCase();
   }
-  $("stepPhone").hidden = !(t.step !== "code" && t.step !== "2fa");
-  $("stepCode").hidden = t.step !== "code";
-  $("step2fa").hidden = t.step !== "2fa";
-  $("otpTo").textContent = t.pending_phone || "";
-  $("teleHint").hidden = t.step === "code" || t.step === "2fa";
+  $("stepPhone").hidden = true;
+  $("stepCode").hidden = true;
+  $("step2fa").hidden = true;
+  $("teleHint").textContent = "Mở bot Telegram của bạn và gõ /login. Bot sẽ hỏi số điện thoại, mã OTP và mật khẩu 2FA nếu có. Gõ /cancel để huỷ.";
+  $("teleHint").hidden = false;
 }
 
 function renderAccounts(list) {
@@ -676,12 +676,7 @@ async function load() {
 
   $("proxyPill").className = "pill " + (s.has_proxy ? "on" : "off");
   $("proxyPill").lastElementChild.textContent = s.has_proxy ? `Proxy · ${s.proxy_count}` : "Chưa có proxy";
-  $("proxyAlert").hidden = !!s.has_proxy;
-  $("addUser").disabled = $("addPass").disabled = !s.has_proxy;
-  $("btnAdd").disabled = !s.has_proxy;
-  $("btnRefresh").disabled = !s.has_proxy;
-  $("btnPing").disabled = !s.has_proxy;
-  $("btnToggle").disabled = !s.has_proxy && !s.enabled;
+  $("proxyAlert").hidden = true;
 
   $("botPill").className = "pill " + (s.enabled ? "on" : "off");
   $("botPill").textContent = s.enabled ? "Bot đang bật" : "Bot tắt";
@@ -775,7 +770,7 @@ $("addForm").onsubmit = async e => {
     $("addUser").value = ""; $("addPass").value = "";
     await load();
   } catch (err) { toast(err.message, "err"); }
-  finally { $("btnAdd").disabled = !(lastState && lastState.has_proxy); $("btnAdd").textContent = "Thêm tài khoản"; }
+  finally { $("btnAdd").disabled = false; $("btnAdd").textContent = "Thêm tài khoản"; }
 };
 $("accRows").onclick = e => {
   const un = e.target.dataset.del;
