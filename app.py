@@ -1131,7 +1131,14 @@ def boot():
     threading.Thread(target=lambda: [a.refresh_token() for a in list(accounts.values())], daemon=True).start()
 
 
-if __name__ == "__main__":
+# Gunicorn chỉ import module, không chạy khối __main__, nên boot() phải gọi ở đây.
+# Chạy 1 worker để tránh khởi động bot/vòng lặp nhiều lần.
+_booted = False
+if not _booted:
+    _booted = True
     boot()
+
+
+if __name__ == "__main__":
     log.info("LC79 web chạy tại cổng %s", PORT)
     app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True, use_reloader=False)
