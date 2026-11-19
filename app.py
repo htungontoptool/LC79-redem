@@ -8,6 +8,7 @@ import hashlib
 import asyncio
 import logging
 import threading
+import concurrent.futures
 from datetime import datetime
 
 import requests
@@ -193,10 +194,10 @@ def random_proxy():
     """Bắt buộc proxy: không có proxy thì không gửi request nào ra ngoài."""
     plist = state.get("proxy_list") or []
     if not plist:
-        raise RuntimeError("Chưa cấu hình proxy")
+        return None  # không có proxy: đi trực tiếp
     proxy = parse_proxy_line(random.choice(plist))
     if not proxy:
-        raise RuntimeError("Proxy không hợp lệ")
+        return None
     stats["proxy_current"] = mask_proxy(proxy["http"])
     return proxy
 
@@ -444,9 +445,6 @@ def _run_worker(run, accs):
 def start_run(code):
     global current_run
     accs = list(accounts.values())
-    if not has_proxy():
-        add_log("NO_PROXY", code=code, detail="Chưa có proxy, không bắn code")
-        return
     if not accs:
         add_log("NO_ACC", code=code, detail="Chưa có tài khoản nào")
         return
@@ -501,7 +499,7 @@ def balance_loop():
         time.sleep(BALANCE_INTERVAL)
         with run_lock:
             busy = current_run is not None and not current_run.stop.is_set()
-        if busy or not has_proxy():
+        if busy:
             continue
         for acc in list(accounts.values()):
             before = acc.balance
@@ -685,6 +683,88 @@ def boot_tele():
         log.exception("Boot Tele lỗi: %s", e)
 
 
+# ========================= BOT TELEGRAM: ĐĂNG NHẬP TELE NGUỒN =========================
+import telebot
+
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "0") or 0)
+tgbot = telebot.TeleBot(BOT_TOKEN) if (BOT_TOKEN and ":" in BOT_TOKEN) else None
+tg_flow = {"step": None, "phone": None, "client": None, "hash": None}
+
+
+def _tg_reset():
+    tg_flow.update(step=None, phone=None, client=None, hash=None)
+
+
+def _tg_is_admin(m):
+    return bool(ADMIN_ID) and m.chat.id == ADMIN_ID
+
+
+if tgbot:
+    @tgbot.message_handler(commands=["start", "login"], func=_tg_is_admin)
+    def tg_login(m):
+        _tg_reset()
+        tg_flow["step"] = "phone"
+        tgbot.send_message(m.chat.id,
+            "Đăng nhập Tele nguồn.\nGửi số điện thoại kèm mã vùng, ví dụ +84912345678.\nGõ /cancel để huỷ.")
+
+    @tgbot.message_handler(commands=["cancel"], func=_tg_is_admin)
+    def tg_cancel(m):
+        if tg_flow.get("client"):
+            try:
+                tcall(tg_flow["client"].disconnect(), 10)
+            except Exception:
+                pass
+        _tg_reset()
+        tgbot.send_message(m.chat.id, "Đã huỷ đăng nhập.")
+
+    @tgbot.message_handler(commands=["status"], func=_tg_is_admin)
+    def tg_status(m):
+        tgbot.send_message(m.chat.id, f"Tele nguồn: {'đã kết nối ' + tele['name'] if tele['ready'] else 'chưa kết nối'}")
+
+    @tgbot.message_handler(func=lambda m: _tg_is_admin(m) and tg_flow["step"] in ("phone", "code", "2fa"))
+    def tg_flow_step(m):
+        text = (m.text or "").strip()
+        step = tg_flow["step"]
+        try:
+            if step == "phone":
+                phone = re.sub(r"\s+", "", text)
+                client, h = tcall(_send_code(phone), 60)
+                tg_flow.update(step="code", phone=phone, client=client, hash=h)
+                tgbot.send_message(m.chat.id, "Đã gửi mã OTP vào Telegram. Nhập mã vào đây.")
+            elif step == "code":
+                code = re.sub(r"\D", "", text)
+                res = tcall(_sign_in_code(tg_flow["client"], tg_flow["phone"], code, tg_flow["hash"]), 60)
+                if res == "2fa":
+                    tg_flow["step"] = "2fa"
+                    tgbot.send_message(m.chat.id, "Tài khoản có 2FA. Nhập mật khẩu 2FA.")
+                    return
+                _finish_login(tg_flow["client"])
+                _tg_reset()
+                tgbot.send_message(m.chat.id, f"Đăng nhập thành công: {tele['name']}. Đang dọn chat khác, giữ kênh nhận code.")
+            elif step == "2fa":
+                tcall(_sign_in_pw(tg_flow["client"], text), 60)
+                _finish_login(tg_flow["client"])
+                _tg_reset()
+                tgbot.send_message(m.chat.id, f"Đăng nhập thành công: {tele['name']}. Đang dọn chat khác, giữ kênh nhận code.")
+        except concurrent.futures.TimeoutError:
+            tgbot.send_message(m.chat.id, "Telegram không phản hồi sau 60 giây. Thử lại sau vài phút bằng /login.")
+            _tg_reset()
+        except Exception as e:
+            log.exception("Bot đăng nhập Tele lỗi")
+            tgbot.send_message(m.chat.id, f"Lỗi: {type(e).__name__}: {e or 'không có chi tiết'}. Gõ /login để thử lại.")
+            _tg_reset()
+
+
+def _bot_poll():
+    while True:
+        try:
+            tgbot.polling(none_stop=True, interval=1, timeout=20)
+        except Exception as e:
+            log.error("Bot Telegram lỗi: %s", e)
+            time.sleep(5)
+
+
 # ========================= FLASK API =========================
 app = Flask(__name__, static_folder=None)
 
@@ -695,6 +775,15 @@ def ok(**kw):
 
 def err(msg, code=400):
     return jsonify(ok=False, error=msg), code
+
+
+@app.errorhandler(Exception)
+def handle_any_error(e):
+    from werkzeug.exceptions import HTTPException
+    if isinstance(e, HTTPException):
+        return jsonify(ok=False, error=e.description), e.code
+    log.exception("Lỗi server")
+    return jsonify(ok=False, error=f"Lỗi server: {type(e).__name__}: {str(e)[:200]}"), 500
 
 
 @app.get("/__version")
@@ -750,8 +839,6 @@ def api_add_account():
     d = request.get_json(force=True, silent=True) or {}
     un = (d.get("username") or "").strip()
     pw = (d.get("password") or "").strip()
-    if not has_proxy():
-        return err("Cần cấu hình proxy trước khi thêm tài khoản")
     if not un or not pw:
         return err("Nhập đủ tài khoản và mật khẩu")
     res = login_and_get_info(un, pw)
@@ -784,9 +871,6 @@ def api_del_account(un):
 
 @app.post("/api/accounts/refresh")
 def api_refresh_accounts():
-    if not has_proxy():
-        return err("Cần cấu hình proxy trước")
-
     def task():
         for a in list(accounts.values()):
             before = a.balance
@@ -807,9 +891,14 @@ def api_tele_send_code():
     if not TELETHON_API_ID or not TELETHON_API_HASH:
         return err("Server chưa có TELETHON_API_ID / TELETHON_API_HASH")
     try:
+        log.info("Gửi OTP tới %s ...", phone[:4] + "***")
         client, h = tcall(_send_code(phone), 60)
+    except concurrent.futures.TimeoutError:
+        log.error("Gửi OTP: Telegram không phản hồi sau 60 giây")
+        return err("Telegram không phản hồi sau 60 giây. Server không kết nối được tới Telegram, thử lại sau vài phút.")
     except Exception as e:
-        return err(f"Gửi OTP lỗi: {e}")
+        log.exception("Gửi OTP lỗi")
+        return err(f"Gửi OTP lỗi: {type(e).__name__}: {e or 'không có chi tiết'}")
     if login.get("client"):
         try:
             tcall(login["client"].disconnect(), 10)
@@ -892,8 +981,6 @@ def api_toggle():
     if state.get("enabled"):
         state["enabled"] = False
     else:
-        if not has_proxy():
-            return err("Cần cấu hình proxy trước khi bật bot")
         if not tele["ready"]:
             return err("Chưa đăng nhập Tele nguồn")
         if not accounts:
@@ -961,10 +1048,10 @@ def api_proxy():
 @app.post("/api/proxy/clear")
 def api_proxy_clear():
     with lock:
-        state.update(proxy_url="", proxy_list=[], enabled=False)
+        state.update(proxy_url="", proxy_list=[])
         save_state()
     stop_current_run()
-    add_log("TELE", detail="Đã xoá proxy, tắt bot")
+    add_log("TELE", detail="Đã xoá proxy")
     return ok()
 
 
@@ -1033,13 +1120,14 @@ def boot():
         pw = str(item.get("pw") or "").strip()
         if un and pw:
             accounts[un.lower()] = Account(un, pw, str(item.get("nick") or un), item.get("balance", 0))
-    if not has_proxy() and state.get("enabled"):
-        state["enabled"] = False
-        save_state()
-        log.warning("Chưa có proxy: đã tắt bot, cần cấu hình proxy trước")
     boot_tele()
     threading.Thread(target=balance_loop, daemon=True).start()
     threading.Thread(target=ping_loop, daemon=True).start()
+    if tgbot:
+        threading.Thread(target=_bot_poll, daemon=True).start()
+        log.info("Bot Telegram đã chạy: nhắn /login để đăng nhập Tele nguồn")
+    else:
+        log.warning("Chưa có BOT_TOKEN: không bật được đăng nhập Tele qua bot")
     threading.Thread(target=lambda: [a.refresh_token() for a in list(accounts.values())], daemon=True).start()
 
 
